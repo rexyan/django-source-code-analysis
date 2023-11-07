@@ -112,7 +112,8 @@ class Command(BaseCommand):
         code.interact(local=imported_objects)
 
     def handle(self, **options):
-        # Execute the command and exit.
+        # 如果有 command 则直接执行 command 命令
+        # 例如：python manage.py shell -c 'print(111)' 或者 python manage.py shell --command 'print(111)'
         if options["command"]:
             exec(options["command"], globals())
             return
@@ -127,12 +128,16 @@ class Command(BaseCommand):
             exec(sys.stdin.read(), globals())
             return
 
+        # 可以使用 -i 或者 --interface 来指定对应的 shell 接口。
+        # 没有指定，那么默认的就是 ["ipython", "bpython", "python"]
         available_shells = (
             [options["interface"]] if options["interface"] else self.shells
         )
 
+        # 循环调用 ["ipython", "bpython", "python"] shell，看哪个成功
         for shell in available_shells:
             try:
+                # 调用当前 Command 类中对应的 ipython 函数，bpython 函数，python 函数。这三个函数分别对应三个不同的 shell 交互模式。
                 return getattr(self, shell)(options)
             except ImportError:
                 pass

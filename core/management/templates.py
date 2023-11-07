@@ -161,6 +161,7 @@ class TemplateCommand(BaseCommand):
             django.setup()
 
         # 模版路径
+        # 如果没有指定模版，那么会使用 django/conf/project_template 中的模版进行项目的创建。
         template_dir = self.handle_template(options["template"], base_subdir)
         prefix_length = len(template_dir) + 1
 
