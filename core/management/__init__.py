@@ -398,6 +398,7 @@ class ManagementUtility:
                     # loading an empty list of applications.
                     apps.all_models = defaultdict(dict)
                     apps.app_configs = {}
+                    # 设置 apps_ready，models_ready，ready 为 True
                     apps.apps_ready = apps.models_ready = apps.ready = True
 
                     # Remove options not compatible with the built-in runserver
