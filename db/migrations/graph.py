@@ -14,9 +14,10 @@ class Node:
 
     def __init__(self, key):
         self.key = key
-        self.children = set()
-        self.parents = set()
+        self.children = set()  # 当前 Node 的子节点
+        self.parents = set()   # 当前 Node 的父节点
 
+    # 以下方法都是 Node 常见的操作，例如判断相等，小于，hash ，添加子节点，父节点 等等。。。
     def __eq__(self, other):
         return self.key == other
 
@@ -42,6 +43,7 @@ class Node:
         self.parents.add(parent)
 
 
+# 一个 Graph 中应该没有 DummyNode，否则则认为 Graph 有异常。
 class DummyNode(Node):
     """
     A node that doesn't correspond to a migration file on disk.
@@ -84,43 +86,52 @@ class MigrationGraph:
     """
 
     def __init__(self):
-        self.node_map = {}
+        self.node_map = {}  # Graph 的映射关系，例如： {k1: Node('m1')}
         self.nodes = {}
 
+    # 添加一个不存在的 Node
     def add_node(self, key, migration):
         assert key not in self.node_map
         node = Node(key)
         self.node_map[key] = node
         self.nodes[key] = migration
 
+    # 添加一个 DummyNode
     def add_dummy_node(self, key, origin, error_message):
         node = DummyNode(key, origin, error_message)
         self.node_map[key] = node
         self.nodes[key] = None
 
+    # 添加一个依赖
     def add_dependency(self, migration, child, parent, skip_validation=False):
         """
         This may create dummy nodes if they don't yet exist. If
         `skip_validation=True`, validate_consistency() should be called
         afterward.
         """
+        # 如果 child 不在 nodes 中，则创建一个 dummy_node
         if child not in self.nodes:
             error_message = (
                 "Migration %s dependencies reference nonexistent"
                 " child node %r" % (migration, child)
             )
             self.add_dummy_node(child, migration, error_message)
+        # 如果 parent 不在 nodes 中，则创建一个 dummy_node
         if parent not in self.nodes:
             error_message = (
                 "Migration %s dependencies reference nonexistent"
                 " parent node %r" % (migration, parent)
             )
             self.add_dummy_node(parent, migration, error_message)
+        # 为 child 添加一个 parent
         self.node_map[child].add_parent(self.node_map[parent])
+        # 为 parent 添加一个 child
         self.node_map[parent].add_child(self.node_map[child])
         if not skip_validation:
+            # 校验 node_map 中是否有 dummy_node
             self.validate_consistency()
 
+    # 使用 replacement 节点替换 replaced 中的节点
     def remove_replaced_nodes(self, replacement, replaced):
         """
         Remove each of the `replaced` nodes (when they exist). Any
@@ -130,6 +141,7 @@ class MigrationGraph:
         # Cast list of replaced keys to set to speed up lookup later.
         replaced = set(replaced)
         try:
+            # 找到要替换的节点（留下来的节点）
             replacement_node = self.node_map[replacement]
         except KeyError as err:
             raise NodeNotFoundError(
@@ -137,10 +149,13 @@ class MigrationGraph:
                 " to the migration graph, or has been removed." % (replacement,),
                 replacement,
             ) from err
+
+        # 遍历要被替换的节点（要移除的节点）
         for replaced_key in replaced:
             self.nodes.pop(replaced_key, None)
             replaced_node = self.node_map.pop(replaced_key, None)
             if replaced_node:
+                # 将要移除的节点的子节点，重新挂载在要替换的节点 replacement_node 上
                 for child in replaced_node.children:
                     child.parents.remove(replaced_node)
                     # We don't want to create dependencies between the replaced
@@ -149,6 +164,8 @@ class MigrationGraph:
                     if child.key not in replaced:
                         replacement_node.add_child(child)
                         child.add_parent(replacement_node)
+
+                # 将要移除的节点的父节点，重新挂载在要替换的节点 replacement_node 上
                 for parent in replaced_node.parents:
                     parent.children.remove(replaced_node)
                     # Again, to avoid self-referencing.
@@ -156,6 +173,7 @@ class MigrationGraph:
                         replacement_node.add_parent(parent)
                         parent.add_child(replacement_node)
 
+    # 使用 replaced 节点替换 replacement 节点及其子节点
     def remove_replacement_node(self, replacement, replaced):
         """
         The inverse operation to `remove_replaced_nodes`. Almost. Remove the
@@ -197,6 +215,7 @@ class MigrationGraph:
         """Ensure there are no dummy nodes remaining in the graph."""
         [n.raise_error() for n in self.node_map.values() if isinstance(n, DummyNode)]
 
+    # dfs 寻找节点
     def forwards_plan(self, target):
         """
         Given a node, return a list of which previous nodes (dependencies) must
@@ -207,6 +226,7 @@ class MigrationGraph:
             raise NodeNotFoundError("Node %r not a valid node" % (target,), target)
         return self.iterative_dfs(self.node_map[target])
 
+    # dfs 寻找节点
     def backwards_plan(self, target):
         """
         Given a node, return a list of which dependent nodes (dependencies)
@@ -217,6 +237,7 @@ class MigrationGraph:
             raise NodeNotFoundError("Node %r not a valid node" % (target,), target)
         return self.iterative_dfs(self.node_map[target], forwards=False)
 
+    # 深度优先搜索
     def iterative_dfs(self, start, forwards=True):
         """Iterative depth-first search for finding dependencies."""
         visited = []
@@ -237,6 +258,7 @@ class MigrationGraph:
                 ]
         return visited
 
+    # 寻找所有根节点
     def root_nodes(self, app=None):
         """
         Return all root nodes - that is, nodes with no dependencies inside
@@ -250,6 +272,7 @@ class MigrationGraph:
                 roots.add(node)
         return sorted(roots)
 
+    # 寻找所有子节点
     def leaf_nodes(self, app=None):
         """
         Return all leaf nodes - that is, nodes with no dependents in their app.
@@ -266,6 +289,7 @@ class MigrationGraph:
                 leaves.add(node)
         return sorted(leaves)
 
+    # 判断循环依赖
     def ensure_not_cyclic(self):
         # Algo from GvR:
         # https://neopythonic.blogspot.com/2009/01/detecting-cycles-in-directed-graph.html
