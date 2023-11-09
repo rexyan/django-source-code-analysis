@@ -6,50 +6,21 @@ from django.db.transaction import atomic
 from .exceptions import IrreversibleError
 
 
+# 迁移的抽象
 class Migration:
-    """
-    The base class for all migrations.
 
-    Migration files will import this from django.db.migrations.Migration
-    and subclass it as a class called Migration. It will have one or more
-    of the following attributes:
-
-     - operations: A list of Operation instances, probably from
-       django.db.migrations.operations
-     - dependencies: A list of tuples of (app_path, migration_name)
-     - run_before: A list of tuples of (app_path, migration_name)
-     - replaces: A list of migration_names
-
-    Note that all migrations come out of migrations and into the Loader or
-    Graph as instances, having been initialized with their app label and name.
-    """
-
-    # Operations to apply during this migration, in order.
+    # 迁移的操作
     operations = []
 
-    # Other migrations that should be run before this migration.
-    # Should be a list of (app, migration_name).
+    # 迁移的依赖
     dependencies = []
 
-    # Other migrations that should be run after this one (i.e. have
-    # this migration added to their dependencies). Useful to make third-party
-    # apps' migrations run after your AUTH_USER replacement, for example.
     run_before = []
 
-    # Migration names in this app that this migration replaces. If this is
-    # non-empty, this migration will only be applied if all these migrations
-    # are not applied.
     replaces = []
 
-    # Is this an initial migration? Initial migrations are skipped on
-    # --fake-initial if the table or fields already exist. If None, check if
-    # the migration has any dependencies to determine if there are dependencies
-    # to tell if db introspection needs to be done. If True, always perform
-    # introspection. If False, never perform introspection.
     initial = None
 
-    # Whether to wrap the whole migration in a transaction. Only has an effect
-    # on database backends which support transactional DDL.
     atomic = True
 
     def __init__(self, name, app_label):
@@ -77,6 +48,7 @@ class Migration:
     def __hash__(self):
         return hash("%s.%s" % (self.app_label, self.name))
 
+    # 执行 operations 状态的迁移
     def mutate_state(self, project_state, preserve=True):
         """
         Take a ProjectState and return a new one with the migration's
@@ -91,6 +63,7 @@ class Migration:
             operation.state_forwards(self.app_label, new_state)
         return new_state
 
+    # 将 Migration 的操作应用到数据库中
     def apply(self, project_state, schema_editor, collect_sql=False):
         """
         Take a project_state representing all migrations prior to this one
@@ -136,6 +109,7 @@ class Migration:
                 schema_editor.collected_sql.append("-- (no-op)")
         return project_state
 
+    # 上述 apply 方法的方向操作
     def unapply(self, project_state, schema_editor, collect_sql=False):
         """
         Take a project_state representing all migrations prior to this one
@@ -197,6 +171,7 @@ class Migration:
                 schema_editor.collected_sql.append("-- (no-op)")
         return project_state
 
+    # 生成迁移操作的名称
     def suggest_name(self):
         """
         Suggest a name for the operations this migration might represent. Names
