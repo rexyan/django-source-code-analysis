@@ -17,6 +17,7 @@ from .exceptions import (
 MIGRATIONS_MODULE_NAME = "migrations"
 
 
+# 加载生成的 migrations 迁移文件
 class MigrationLoader:
     """
     Load migration files from disk and their status from the database.
@@ -42,6 +43,7 @@ class MigrationLoader:
     in memory.
     """
 
+    # 初始化需要传递一个 connection，
     def __init__(
         self,
         connection,
@@ -54,15 +56,14 @@ class MigrationLoader:
         self.applied_migrations = None
         self.ignore_no_migrations = ignore_no_migrations
         self.replace_migrations = replace_migrations
+        # 构建迁移图
         if load:
             self.build_graph()
 
     @classmethod
     def migrations_module(cls, app_label):
         """
-        Return the path to the migrations module for the specified app_label
-        and a boolean indicating if the module is specified in
-        settings.MIGRATION_MODULE.
+        返回指定 app_label 的迁移模块的路径
         """
         if app_label in settings.MIGRATION_MODULES:
             return settings.MIGRATION_MODULES[app_label], True
@@ -72,16 +73,20 @@ class MigrationLoader:
 
     def load_disk(self):
         """Load the migrations from all INSTALLED_APPS from disk."""
-        self.disk_migrations = {}
-        self.unmigrated_apps = set()
-        self.migrated_apps = set()
+        self.disk_migrations = {}     # 加载的磁盘上的所有应用的 migration 的映射，形如：{(auth, 0001_initial): Migration(0001_initial, auth)}，代表的是 auth 应用下的 0001_initial 这个 migration
+        self.unmigrated_apps = set()  # 未迁移的应用
+        self.migrated_apps = set()    # 已迁移的应用
+
+        #
         for app_config in apps.get_app_configs():
-            # Get the migrations module directory
+            # app_config.label 获取到的是 setting 里面的应用的名称
+            # 获取应用 migrations 模块的路径。如果自己创建了一个叫做 books 的应用，那么 module_name 的值就是 books.migrations
             module_name, explicit = self.migrations_module(app_config.label)
             if module_name is None:
                 self.unmigrated_apps.add(app_config.label)
                 continue
             was_loaded = module_name in sys.modules
+            # 导入项目的 migrations 模块
             try:
                 module = import_module(module_name)
             except ModuleNotFoundError as e:
@@ -104,19 +109,27 @@ class MigrationLoader:
                 ):
                     self.unmigrated_apps.add(app_config.label)
                     continue
+                # 如果已经加载，则强制重新加载
                 # Force a reload if it's already loaded (tests need this)
                 if was_loaded:
                     reload(module)
+
+            # 将次应用变更为已迁移的应用
             self.migrated_apps.add(app_config.label)
+            # 获取到应用迁移模块下的所有迁移文件，例如内置 auth 应用下的 migrations 文件夹下的所有迁移文件，其实就是 django/contrib/auth/migrations 下的所有文件
+            # migration_names 结果的值就是 {0001_initial, 0002_alter_permission_name_max_length, ......}
             migration_names = {
                 name
                 for _, name, is_pkg in pkgutil.iter_modules(module.__path__)
                 if not is_pkg and name[0] not in "_~"
             }
+            # 加载每个 migration 文件
             # Load migrations
             for migration_name in migration_names:
+                # 拼接得到完整的 migration 文件的路径
                 migration_path = "%s.%s" % (module_name, migration_name)
                 try:
+                    # 加载 migration 文件
                     migration_module = import_module(migration_path)
                 except ImportError as e:
                     if "bad magic number" in str(e):
@@ -126,11 +139,15 @@ class MigrationLoader:
                         ) from e
                     else:
                         raise
+                # 迁移文件中必须包含 Migration 类，否则抛出异常
                 if not hasattr(migration_module, "Migration"):
                     raise BadMigrationError(
                         "Migration %s in app %s has no Migration class"
                         % (migration_name, app_config.label)
                     )
+                # disk_migrations 是一个字典，key 是一个二元组，(应用名称，migration 名称)，例如(auth, 0001_initial)
+                # disk_migrations 的值是对应的 migration文件的 Migration 类的实例对象，也就是实例话每个 migration 文件中的 Migration 类。例如 Migration(0001_initial, auth)
+                # 项目中生成的每个 migration 文件中的每个 Migration 类都是继承 django/db/migrations/migration.py 中的 Migration 的，他的初始化需要两个参数，分别为 name, app_label。name 代表 migration 的名称，app_label 则代表应用的名称。
                 self.disk_migrations[
                     app_config.label, migration_name
                 ] = migration_module.Migration(
@@ -196,24 +213,41 @@ class MigrationLoader:
                     )
         raise ValueError("Dependency on unknown app: %s" % key[0])
 
+    # 添加同一个应用里面的依赖的关系
+    """
+    假如一个 migration 文件的 dependencies 信息如下：
+    dependencies = [
+        ("auth", "0002_alter_permission_name_max_length"),
+    ]
+    key 相当于 auth，migration 相当于 0002_alter_permission_name_max_length
+
+    还有一种 dependencies 如下：
+    dependencies = [
+        ("contenttypes", "__first__"),
+    ]
+    这个就代表依赖 contenttypes 里面的 __first__，即 django/contrib/contenttypes/migrations/0001_initial.py 中的 Migration
+    当然下面方法中的 self.graph.add_dependency 排除了 __first__ 的这种 migration
+    """
     def add_internal_dependencies(self, key, migration):
         """
         Internal dependencies need to be added first to ensure `__first__`
         dependencies find the correct root node.
         """
         for parent in migration.dependencies:
-            # Ignore __first__ references to the same app.
+            # parent[0] == key[0] 代表的是同一个应用，parent[1] != "__first__" 代表不是第一个 migration 文件
             if parent[0] == key[0] and parent[1] != "__first__":
                 self.graph.add_dependency(migration, key, parent, skip_validation=True)
 
+    # 添加外部依赖
     def add_external_dependencies(self, key, migration):
         for parent in migration.dependencies:
-            # Skip internal dependencies
+            # 跳过内部依赖
             if key[0] == parent[0]:
                 continue
             parent = self.check_key(parent, key[0])
             if parent is not None:
                 self.graph.add_dependency(migration, key, parent, skip_validation=True)
+        # 处理 run_before。如果有 run_before，需要遍历加入 graph 中
         for child in migration.run_before:
             child = self.check_key(child, key[0])
             if child is not None:
@@ -225,30 +259,41 @@ class MigrationLoader:
         You'll need to rebuild the graph if you apply migrations. This isn't
         usually a problem as generally migration stuff runs in a one-shot process.
         """
+        # 从磁盘上加载每个应用的 migration 文件
         # Load disk data
         self.load_disk()
+
+        # 没有 connection 那么将 applied_migrations 设置空
         # Load database data
         if self.connection is None:
             self.applied_migrations = {}
         else:
+            # 创建MigrationRecorder 对象，调用 applied_migrations 方法查询已经存在数据库 django_migrations 表中的 migration 的执行记录
             recorder = MigrationRecorder(self.connection)
             self.applied_migrations = recorder.applied_migrations()
         # To start, populate the migration graph with nodes for ALL migrations
         # and their dependencies. Also make note of replacing migrations at this step.
+        # 创建一个迁移图
         self.graph = MigrationGraph()
         self.replacements = {}
+
+        # 第一次遍历，遍历从磁盘加载的 migration 信息，创建 node，并且记录替换信息
         for key, migration in self.disk_migrations.items():
             self.graph.add_node(key, migration)
-            # Replacing migrations.
+            # 如果该 migration 有 replaces，那么记录到 replacements 中
             if migration.replaces:
                 self.replacements[key] = migration
+
+        # 第二次遍历，遍历从磁盘加载的 migration 信息，添加内部依赖
         for key, migration in self.disk_migrations.items():
             # Internal (same app) dependencies.
             self.add_internal_dependencies(key, migration)
-        # Add external dependencies now that the internal ones have been resolved.
+
+        # 第三次遍历，遍历从磁盘加载的 migration 信息，添加外部依赖
         for key, migration in self.disk_migrations.items():
             self.add_external_dependencies(key, migration)
-        # Carry out replacements where possible and if enabled.
+
+        # 替换 migration
         if self.replace_migrations:
             for key, migration in self.replacements.items():
                 # Get applied status of each of this migration's replacement
@@ -271,7 +316,8 @@ class MigrationLoader:
                     # partially applied. Remove it from the graph and remap
                     # dependencies to it (#25945).
                     self.graph.remove_replacement_node(key, migration.replaces)
-        # Ensure the graph is consistent.
+
+        # 判断是否存在虚拟节点
         try:
             self.graph.validate_consistency()
         except NodeNotFoundError as exc:
@@ -302,19 +348,26 @@ class MigrationLoader:
                         exc.node,
                     ) from exc
             raise
+
+        # 判断 graph 是否存在循环
         self.graph.ensure_not_cyclic()
 
+    # 检查迁移记录，用于检查数据库中的 migration 记录是否正常。
     def check_consistent_history(self, connection):
         """
         Raise InconsistentMigrationHistory if any applied migrations have
         unapplied dependencies.
         """
+        # 实例话 MigrationRecorder
         recorder = MigrationRecorder(connection)
+        # 查询数据库中的迁移记录
         applied = recorder.applied_migrations()
         for migration in applied:
-            # If the migration is unknown, skip it.
+            # 如果数据库表 django_migrations 中的迁移记录，没有在当前的 graph 中，那么就跳过
             if migration not in self.graph.nodes:
                 continue
+
+            # 检查数据库记录中的 migration 对象的 parents，所依赖的 parents 也是存在于数据库中的
             for parent in self.graph.node_map[migration].parents:
                 if parent not in applied:
                     # Skip unapplied squashed migrations that have all of their
@@ -335,6 +388,7 @@ class MigrationLoader:
                         )
                     )
 
+    # 检测是否冲突
     def detect_conflicts(self):
         """
         Look through the loaded graph and detect any conflicts - apps
@@ -343,6 +397,7 @@ class MigrationLoader:
         """
         seen_apps = {}
         conflicting_apps = set()
+        # 获取所有的叶子节点的应用名称和 migration 名称
         for app_label, migration_name in self.graph.leaf_nodes():
             if app_label in seen_apps:
                 conflicting_apps.add(app_label)
