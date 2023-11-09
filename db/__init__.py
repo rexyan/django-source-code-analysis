@@ -38,6 +38,7 @@ connections = ConnectionHandler()
 router = ConnectionRouter()
 
 # For backwards compatibility. Prefer connections['default'] instead.
+# 在配置文件中可以配置多个数据库，这里采用的是默认的数据库 DEFAULT_DB_ALIAS 的值为 default
 connection = ConnectionProxy(connections, DEFAULT_DB_ALIAS)
 
 

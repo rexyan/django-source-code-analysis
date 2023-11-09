@@ -8,15 +8,7 @@ from .exceptions import MigrationSchemaMissing
 
 class MigrationRecorder:
     """
-    Deal with storing migration records in the database.
-
-    Because this table is actually itself used for dealing with model
-    creation, it's the one thing we can't do normally via migrations.
-    We manually handle table creation/schema updating (using schema backend)
-    and then have a floating model to do queries with.
-
-    If a migration is unapplied its row is removed from the table. Having
-    a row in the table always means a migration is applied.
+    迁移记录，对应数据库表中的 django_migrations 表
     """
 
     _migration_class = None
@@ -24,8 +16,7 @@ class MigrationRecorder:
     @classproperty
     def Migration(cls):
         """
-        Lazy load to avoid AppRegistryNotReady if installed apps import
-        MigrationRecorder.
+        懒加载 Migration
         """
         if cls._migration_class is None:
 
@@ -45,19 +36,25 @@ class MigrationRecorder:
             cls._migration_class = Migration
         return cls._migration_class
 
+    # 使用 MigrationRecorder 的时候需要传入一个 connection
+    # 可以使用 django/db/__init__.py 里面的 connection，connection 返回 default 数据库的连接
     def __init__(self, connection):
         self.connection = connection
 
+    # 查询所有记录
     @property
     def migration_qs(self):
         return self.Migration.objects.using(self.connection.alias)
 
+    # 判断 django_migrations 表是否存在
     def has_table(self):
         """Return True if the django_migrations table exists."""
         with self.connection.cursor() as cursor:
+            # 获取数据库所有表
             tables = self.connection.introspection.table_names(cursor)
         return self.Migration._meta.db_table in tables
 
+    # 判断是否存在 django_migrations 表，不存在则创建
     def ensure_schema(self):
         """Ensure the table exists and has the correct schema."""
         # If the table's there, that's fine - we've never changed its schema
@@ -73,6 +70,7 @@ class MigrationRecorder:
                 "Unable to create the django_migrations table (%s)" % exc
             )
 
+    # 返回所有的 migration 记录信息
     def applied_migrations(self):
         """
         Return a dict mapping (app_name, migration_name) to Migration instances
@@ -88,16 +86,19 @@ class MigrationRecorder:
             # are applied.
             return {}
 
+    # 新增一条 migration 记录信息
     def record_applied(self, app, name):
         """Record that a migration was applied."""
         self.ensure_schema()
         self.migration_qs.create(app=app, name=name)
 
+    # 删除一条 migration 记录信息
     def record_unapplied(self, app, name):
         """Record that a migration was unapplied."""
         self.ensure_schema()
         self.migration_qs.filter(app=app, name=name).delete()
 
+    # 删除所有 migration 记录信息
     def flush(self):
         """Delete all migration records. Useful for testing migrations."""
         self.migration_qs.all().delete()
