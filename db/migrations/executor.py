@@ -91,6 +91,7 @@ class MigrationExecutor:
                     migration.mutate_state(state, preserve=False)
         return state
 
+    # 执行迁移
     def migrate(self, targets, plan=None, state=None, fake=False, fake_initial=False):
         """
         Migrate the database up to the given targets.

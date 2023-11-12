@@ -52,11 +52,13 @@ class Command(BaseCommand):
                 "database."
             ),
         )
+        # 只生成 migration 记录（django_migrations 表中），不生成表
         parser.add_argument(
             "--fake",
             action="store_true",
             help="Mark migrations as run without actually running them.",
         )
+        # 如果执行 migrate 时，表已经存在，则可以加上 --fake-initial
         parser.add_argument(
             "--fake-initial",
             action="store_true",
@@ -67,11 +69,13 @@ class Command(BaseCommand):
                 "existing table name."
             ),
         )
+        # 打印迁移计划，也不会去修改数据库
         parser.add_argument(
             "--plan",
             action="store_true",
             help="Shows a list of the migration actions that will be performed.",
         )
+        # 为没有 migration 的应用创建表（允许在没有 migration 的情况下为应用创建表。虽然不推荐这样做，但在有数百个模型的大型项目中，迁移框架有时太慢。）
         parser.add_argument(
             "--run-syncdb",
             action="store_true",
@@ -102,23 +106,30 @@ class Command(BaseCommand):
         self.verbosity = options["verbosity"]
         self.interactive = options["interactive"]
 
+        # 判断是否有 management 子模块，如果有则导入
         # Import the 'management' module within each installed app, to register
         # dispatcher events.
         for app_config in apps.get_app_configs():
             if module_has_submodule(app_config.module, "management"):
                 import_module(".management", app_config.name)
 
+        # 获取 connection，默认使用 default
         # Get the database we're operating from
         connection = connections[database]
 
+        # 执行不同数据库的 prepare 操作
         # Hook for backends needing any database preparation
         connection.prepare_database()
+
+        # 创建一个 migration 执行器，里面一个 MigrationLoader 和 MigrationRecorder
         # Work out which apps have migrations and which do not
         executor = MigrationExecutor(connection, self.migration_progress_callback)
 
+        # 使用 loader 检查迁移记录，用于检查数据库中的 migration 记录是否正常
         # Raise an error if any migrations are applied before their dependencies.
         executor.loader.check_consistent_history(connection)
 
+        # 检测是否冲突（有多个叶子节点）
         # Before anything else, see if there's conflicting apps and drop out
         # hard if there are any
         conflicts = executor.loader.detect_conflicts()
@@ -135,6 +146,8 @@ class Command(BaseCommand):
         # If they supplied command line arguments, work out what they mean.
         run_syncdb = options["run_syncdb"]
         target_app_labels_only = True
+
+        # 校验 app 名称
         if options["app_label"]:
             # Validate app_label.
             app_label = options["app_label"]
@@ -143,34 +156,42 @@ class Command(BaseCommand):
             except LookupError as err:
                 raise CommandError(str(err))
             if run_syncdb:
+                # 如果使用了 --run-syncdb 命令，那么当前应用不能有 migration 文件，即应用不应该在已迁移的应用集合中
                 if app_label in executor.loader.migrated_apps:
                     raise CommandError(
                         "Can't use run_syncdb with app '%s' as it has migrations."
                         % app_label
                     )
+            # 如果没有使用 --run-syncdb 命令，那么当前应用就应该在已迁移的应用集合中，否则就报错
             elif app_label not in executor.loader.migrated_apps:
                 raise CommandError("App '%s' does not have migrations." % app_label)
 
+        # 如果同时传入了 app 名称和 migration 文件的名称
         if options["app_label"] and options["migration_name"]:
             migration_name = options["migration_name"]
             if migration_name == "zero":
                 targets = [(app_label, None)]
             else:
                 try:
+                    # 根据传入的 migration 名称，根据前缀获取对应的 migration 文件
                     migration = executor.loader.get_migration_by_prefix(
                         app_label, migration_name
                     )
                 except AmbiguityError:
+                    # 匹配到多个 migration 文件
                     raise CommandError(
                         "More than one migration matches '%s' in app '%s'. "
                         "Please be more specific." % (migration_name, app_label)
                     )
                 except KeyError:
+                    # 未匹配到 migration 文件
                     raise CommandError(
                         "Cannot find a migration matching '%s' from app '%s'."
                         % (migration_name, app_label)
                     )
                 target = (app_label, migration.name)
+
+                # 判断是否要进行替换
                 # Partially applied squashed migrations are not included in the
                 # graph, use the last replacement instead.
                 if (
@@ -181,11 +202,16 @@ class Command(BaseCommand):
                     target = incomplete_migration.replaces[-1]
                 targets = [target]
             target_app_labels_only = False
+
+        # 只传入了 app 名称
         elif options["app_label"]:
+            # 取出对应 app 下的所有叶子节点
             targets = [
                 key for key in executor.loader.graph.leaf_nodes() if key[0] == app_label
             ]
+        # 啥也没传入，只执行了 migrate
         else:
+            # 取出所有 app 的叶子节点
             targets = executor.loader.graph.leaf_nodes()
 
         if options["prune"]:
@@ -239,16 +265,22 @@ class Command(BaseCommand):
                 elif self.verbosity > 0:
                     self.stdout.write("  No migrations to prune.")
 
+        # 根据 targets 获取到迁移计划
         plan = executor.migration_plan(targets)
 
+        # 如果传递了 --plan
         if options["plan"]:
             self.stdout.write("Planned operations:", self.style.MIGRATE_LABEL)
+            # 加上了 --plan，但是没有迁移计划
             if not plan:
                 self.stdout.write("  No planned migration operations.")
             else:
+                # 加上了 --plan，有迁移计划
                 for migration, backwards in plan:
                     self.stdout.write(str(migration), self.style.MIGRATE_HEADING)
+                    # 遍历每个迁移文件里面的 operations
                     for operation in migration.operations:
+                        # 返回一个字符串，用于描述 --plan 的迁移操作。
                         message, is_error = self.describe_operation(
                             operation, backwards
                         )
@@ -298,8 +330,10 @@ class Command(BaseCommand):
                         + "%s, from %s" % (targets[0][1], targets[0][0])
                     )
 
+        #  创建一个 project_state
         pre_migrate_state = executor._create_project_state(with_applied_migrations=True)
         pre_migrate_apps = pre_migrate_state.apps
+        # 发送一个 migrate 信号
         emit_pre_migrate_signal(
             self.verbosity,
             self.interactive,
@@ -320,19 +354,24 @@ class Command(BaseCommand):
             else:
                 self.sync_apps(connection, executor.loader.unmigrated_apps)
 
+        # 执行迁移动作
         # Migrate!
         if self.verbosity >= 1:
             self.stdout.write(self.style.MIGRATE_HEADING("Running migrations:"))
+        # 没有执行计划
         if not plan:
             if self.verbosity >= 1:
                 self.stdout.write("  No migrations to apply.")
                 # If there's changes that aren't in migrations yet, tell them
                 # how to fix it.
+                # 检查数据库
                 autodetector = MigrationAutodetector(
                     executor.loader.project_state(),
                     ProjectState.from_apps(apps),
                 )
+                # changes 方法检查 model 和 migration 文件是否有变化，返回值是app名称和变化的 Migration 对象
                 changes = autodetector.changes(graph=executor.loader.graph)
+                # 没有迁移计划，但是发现model和有变更。那么下面就提示让你先执行 manage.py makemigrations 命令
                 if changes:
                     self.stdout.write(
                         self.style.NOTICE(
@@ -350,13 +389,16 @@ class Command(BaseCommand):
                     )
             fake = False
             fake_initial = False
+        # 有执行计划
         else:
             fake = options["fake"]
             fake_initial = options["fake_initial"]
+
+        # 执行真正的迁移
         post_migrate_state = executor.migrate(
-            targets,
-            plan=plan,
-            state=pre_migrate_state.clone(),
+            targets,  # 叶子节点
+            plan=plan,  # 执行计划
+            state=pre_migrate_state.clone(),  # 拷贝状态
             fake=fake,
             fake_initial=fake_initial,
         )
@@ -380,6 +422,7 @@ class Command(BaseCommand):
 
         # Send the post_migrate signal, so individual apps can do whatever they need
         # to do at this point.
+        # 发送迁移信号
         emit_post_migrate_signal(
             self.verbosity,
             self.interactive,
@@ -486,6 +529,7 @@ class Command(BaseCommand):
             if self.verbosity >= 1:
                 self.stdout.write("    Running deferred SQL...")
 
+    # 返回一个字符串，用于描述 --plan 的迁移操作。
     @staticmethod
     def describe_operation(operation, backwards):
         """Return a string that describes a migration operation for --plan."""
