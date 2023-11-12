@@ -19,6 +19,7 @@ from django.utils.topological_sort import stable_topological_sort
 
 
 class MigrationAutodetector:
+    # 取一对 ProjectState 并比较它们，看看第一个需要做什么才能使其与第二个匹配（第二个通常是项目的当前状态）
     """
     Take a pair of ProjectStates and compare them to see what the first would
     need doing to make it match the second (the second usually being the

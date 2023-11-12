@@ -104,12 +104,14 @@ class Command(BaseCommand):
     @no_translations
     def handle(self, *app_labels, **options):
         self.written_files = []
-        self.verbosity = options["verbosity"]
-        self.interactive = options["interactive"]
-        self.dry_run = options["dry_run"]
-        self.merge = options["merge"]
+        self.verbosity = options["verbosity"]  # -v 打印详情
+        self.interactive = options["interactive"]  #
+        self.dry_run = options["dry_run"]  # 尝试运行
+        self.merge = options["merge"]  # 合并
         self.empty = options["empty"]
-        self.migration_name = options["name"]
+        self.migration_name = options["name"]  # -n 自定义迁移名称
+
+        # 判断迁移名称是否合法
         if self.migration_name and not self.migration_name.isidentifier():
             raise CommandError("The migration name must be a valid Python identifier.")
         self.include_header = options["include_header"]
@@ -120,11 +122,13 @@ class Command(BaseCommand):
         if self.scriptable:
             self.stderr.style_func = None
 
+        # 检查 app 名称是否存在
         # Make sure the app they asked for exists
         app_labels = set(app_labels)
         has_bad_labels = False
         for app_label in app_labels:
             try:
+                # 这里面就会检查 app 是否就绪
                 apps.get_app_config(app_label)
             except LookupError as err:
                 self.stderr.write(str(err))
@@ -132,17 +136,24 @@ class Command(BaseCommand):
         if has_bad_labels:
             sys.exit(2)
 
+        # 创建一个 Loader，并且在里面构建一个 graph
         # Load the current graph state. Pass in None for the connection so
         # the loader doesn't try to resolve replaced migrations from DB.
         loader = MigrationLoader(None, ignore_no_migrations=True)
 
+        # 所有应用的名称
         # Raise an error if any migrations are applied before their dependencies.
         consistency_check_labels = {config.label for config in apps.get_app_configs()}
         # Non-default databases are only checked if database routers used.
+
+        # 如果自定义了其他数据库，那么就是使用自定义的，否则使用 [default]
         aliases_to_check = (
             connections if settings.DATABASE_ROUTERS else [DEFAULT_DB_ALIAS]
         )
+
+        # 检查所有应用的迁移记录，检查数据库中的 migration 记录是否正常。
         for alias in sorted(aliases_to_check):
+            # 获取一个 connection 对象
             connection = connections[alias]
             if connection.settings_dict["ENGINE"] != "django.db.backends.dummy" and any(
                 # At least one model must be migrated to the database.
@@ -150,9 +161,12 @@ class Command(BaseCommand):
                     connection.alias, app_label, model_name=model._meta.object_name
                 )
                 for app_label in consistency_check_labels
+
+                # 获取应用下的所有模型
                 for model in apps.get_app_config(app_label).get_models()
             ):
                 try:
+                    #  检查迁移记录，用于检查数据库中的 migration 记录是否正常。
                     loader.check_consistent_history(connection)
                 except OperationalError as error:
                     warnings.warn(
@@ -160,6 +174,8 @@ class Command(BaseCommand):
                         "performed for database connection '%s': %s" % (alias, error),
                         RuntimeWarning,
                     )
+
+        # 检查是否有冲突（存在多个叶子节点）
         # Before anything else, see if there's conflicting apps and drop out
         # hard if there are any and they don't want to merge
         conflicts = loader.detect_conflicts()
@@ -173,6 +189,7 @@ class Command(BaseCommand):
                 if app_label in app_labels
             }
 
+        # 有冲突（即多个叶子节点）且没有使用 merge 选项来解决冲突，那么就报错
         if conflicts and not self.merge:
             name_str = "; ".join(
                 "%s in %s" % (", ".join(names), app) for app, names in conflicts.items()
@@ -183,16 +200,19 @@ class Command(BaseCommand):
                 "'python manage.py makemigrations --merge'" % name_str
             )
 
+        # 使用了 merge 选项，但是没有冲突，那么也是报错
         # If they want to merge and there's nothing to merge, then politely exit
         if self.merge and not conflicts:
             self.log("No conflicts detected to merge.")
             return
 
+        # 有冲突（即多个叶子节点）且使用了 merge 选项来解决冲突
         # If they want to merge and there is something to merge, then
         # divert into the merge code
         if self.merge and conflicts:
             return self.handle_merge(loader, conflicts)
 
+        # 迁移过程中是否使用交互式命令行
         if self.interactive:
             questioner = InteractiveMigrationQuestioner(
                 specified_apps=app_labels,
@@ -206,6 +226,8 @@ class Command(BaseCommand):
                 verbosity=self.verbosity,
                 log=self.log,
             )
+
+        # 创建 MigrationAutodetector 对象，取一对 ProjectState 并比较它们，看看第一个需要做什么才能使其与第二个匹配（第二个通常是项目的当前状态）
         # Set up autodetector
         autodetector = MigrationAutodetector(
             loader.project_state(),
@@ -229,6 +251,7 @@ class Command(BaseCommand):
             self.write_migration_files(changes)
             return
 
+        # changes 方法检查 model 和 migration 文件是否有变化，返回值是app名称和变化的 Migration 对象
         # Detect changes
         changes = autodetector.changes(
             graph=loader.graph,
@@ -238,6 +261,7 @@ class Command(BaseCommand):
         )
 
         if not changes:
+            # model 和 migration 都没有发生变化
             # No changes? Tell them.
             if self.verbosity >= 1:
                 if app_labels:
@@ -251,11 +275,14 @@ class Command(BaseCommand):
                 else:
                     self.log("No changes detected")
         else:
+            # 有变化
             if check_changes:
                 sys.exit(1)
             if self.update:
+                # 写入最后的迁移文件
                 self.write_to_last_migration_files(changes)
             else:
+                # 写迁移文件
                 self.write_migration_files(changes)
 
     def write_to_last_migration_files(self, changes):
@@ -329,6 +356,7 @@ class Command(BaseCommand):
 
         self.write_migration_files(new_changes, update_previous_migration_paths)
 
+    # 写迁移文件
     def write_migration_files(self, changes, update_previous_migration_paths=None):
         """
         Take a changes dict and write them out as migration files.
@@ -338,6 +366,8 @@ class Command(BaseCommand):
             if self.verbosity >= 1:
                 self.log(self.style.MIGRATE_HEADING("Migrations for '%s':" % app_label))
             for migration in app_migrations:
+
+                # 创建一个 MigrationWriter 对象
                 # Describe the migration
                 writer = MigrationWriter(migration, self.include_header)
                 if self.verbosity >= 1:
@@ -349,6 +379,8 @@ class Command(BaseCommand):
                         self.log("    - %s" % operation.describe())
                     if self.scriptable:
                         self.stdout.write(migration_string)
+
+                # 不是尝试运行
                 if not self.dry_run:
                     # Write the migrations file to the disk.
                     migrations_directory = os.path.dirname(writer.path)
@@ -359,10 +391,14 @@ class Command(BaseCommand):
                             open(init_path, "w").close()
                         # We just do this once per app
                         directory_created[app_label] = True
+
+                    # 调用 as_string 获取到写入到迁移文件的内容
                     migration_string = writer.as_string()
+                    # 写入到迁移文件中
                     with open(writer.path, "w", encoding="utf-8") as fh:
                         fh.write(migration_string)
                         self.written_files.append(writer.path)
+
                     if update_previous_migration_paths:
                         prev_path = update_previous_migration_paths[app_label]
                         rel_prev_path = self.get_relative_path(prev_path)
